@@ -16,6 +16,7 @@ import android.text.style.StyleSpan;
 import android.text.style.TypefaceSpan;
 import android.text.style.URLSpan;
 import android.util.DisplayMetrics;
+import android.util.Patterns;
 import android.util.TypedValue;
 import in.uncod.android.bypass.Element.Type;
 import in.uncod.android.bypass.style.HorizontalLineSpan;
@@ -86,9 +87,11 @@ public class Bypass {
 	public CharSequence markdownToSpannable(String markdown, ImageGetter imageGetter) {
 		Document document = processMarkdown(markdown);
 
-		CharSequence[] spans = new CharSequence[document.getElementCount()];
-		for (int i = 0; i < document.getElementCount(); i++) {
-			spans[i] = recurseElement(document.getElement(i), imageGetter);
+		int size = document.getElementCount();
+		CharSequence[] spans = new CharSequence[size];
+
+		for (int i = 0; i < size; i++) {
+			spans[i] = recurseElement(document.getElement(i), i, size, imageGetter);
 		}
 
 		return TextUtils.concat(spans);
@@ -96,22 +99,31 @@ public class Bypass {
 
 	private native Document processMarkdown(String markdown);
 
-	private CharSequence recurseElement(Element element, ImageGetter imageGetter) {
+	// The 'numberOfSiblings' parameters refers to the number of siblings within the parent, including
+	// the 'element' parameter, as in "How many siblings are you?" rather than "How many siblings do
+	// you have?".
+	private CharSequence recurseElement(Element element, int indexWithinParent, int numberOfSiblings,
+			ImageGetter imageGetter) {
+
 		Type type = element.getType();
 
 		boolean isOrderedList = false;
 		if (type == Type.LIST) {
 			String flagsStr = element.getAttribute("flags");
-			int flags = Integer.parseInt(flagsStr);
-			isOrderedList = (flags & Element.F_LIST_ORDERED) != 0;
-			if (isOrderedList) {
-				mOrderedListNumber.put(element, 1);
+			if (flagsStr != null) {
+				int flags = Integer.parseInt(flagsStr);
+				isOrderedList = (flags & Element.F_LIST_ORDERED) != 0;
+				if (isOrderedList) {
+					mOrderedListNumber.put(element, 1);
+				}
 			}
 		}
 
-		CharSequence[] spans = new CharSequence[element.size()];
-		for (int i = 0; i < element.size(); i++) {
-			spans[i] = recurseElement(element.children[i], imageGetter);
+		int size = element.size();
+		CharSequence[] spans = new CharSequence[size];
+		
+		for (int i = 0; i < size; i++) {
+			spans[i] = recurseElement(element.children[i], i, size, imageGetter);
 		}
 
 		// Clean up after we're done
@@ -188,26 +200,32 @@ public class Bypass {
 
 		builder.append(text);
 		builder.append(concat);
-
-		if (type == Type.LIST_ITEM) {
-			if (element.size() == 0 || !element.children[element.size() - 1].isBlockElement()) {
-				builder.append("\n");
-			}
-		}
-		else if (element.isBlockElement() && type != Type.BLOCK_QUOTE) {
-			if (type == Type.LIST) {
-				// If this is a nested list, don't include newlines
-				if (element.getParent() == null || element.getParent().getType() != Type.LIST_ITEM) {
+		
+		// Don't auto-append whitespace after last item in document. The 'numberOfSiblings'
+		// is the number of children the parent of the current element has (including the
+		// element itself), hence subtracting a number from that count gives us the index
+		// of the last child within the parent.
+		if (element.getParent() != null || indexWithinParent < (numberOfSiblings - 1)) {
+			if (type == Type.LIST_ITEM) {
+				if (element.size() == 0 || !element.children[element.size() - 1].isBlockElement()) {
 					builder.append("\n");
 				}
 			}
-			else if (element.getParent() != null
-				&& element.getParent().getType() == Type.LIST_ITEM) {
-				// List items should never double-space their entries
-				builder.append("\n");
-			}
-			else {
-				builder.append("\n\n");
+			else if (element.isBlockElement() && type != Type.BLOCK_QUOTE) {
+				if (type == Type.LIST) {
+					// If this is a nested list, don't include newlines
+					if (element.getParent() == null || element.getParent().getType() != Type.LIST_ITEM) {
+						builder.append("\n");
+					}
+				}
+				else if (element.getParent() != null
+					&& element.getParent().getType() == Type.LIST_ITEM) {
+					// List items should never double-space their entries
+					builder.append("\n");
+				}
+				else {
+					builder.append("\n\n");
+				}
 			}
 		}
 
@@ -240,7 +258,7 @@ public class Bypass {
 			case LINK:
 			case AUTOLINK:
 				String link = element.getAttribute("link");
-				if (Patterns.EMAIL_ADDRESS.matcher(link).matches()) {
+				if (!TextUtils.isEmpty(link) && Patterns.EMAIL_ADDRESS.matcher(link).matches()) {
 					link = "mailto:" + link;
 				}
 				setSpan(builder, new URLSpan(link));
@@ -275,7 +293,8 @@ public class Bypass {
 
 	// These have trailing newlines that we want to avoid spanning
 	private static void setBlockSpan(SpannableStringBuilder builder, Object what) {
-		builder.setSpan(what, 0, builder.length() - 1, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
+		int length = Math.max(0, builder.length() - 1);
+		builder.setSpan(what, 0, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE);
 	}
 
 	/**
